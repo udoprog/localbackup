@@ -1,0 +1,269 @@
+#!/bin/bash
+set -e
+
+find_bin() {
+    bin=$1
+
+    IFS=":"
+    for p in $PATH; do
+        if [[ -x $p/$bin ]]; then
+            echo $p/$bin
+        fi
+    done
+}
+
+print_usage() {
+    cat << ENDL
+
+Usage: lbrun -s <source> [-l <location>] <mode>
+
+-h: Print help and exit immediately.
+-s: Source location of directory to backup
+-l: Location to save backup structure, required during setup
+-V: Be verbose
+
+<mode> is one of:
+    setup  - Perform initial setup.
+    cron   - Print cron job definitions.
+    full   - Run full weekly backup.
+    hourly - Run incremental hourly backup (hour 00-23).
+    daily  - Run incremental daily backup on a weekly schedule (day 1-7).
+
+Configuration can be generated using an initial run.
+#> mkdir /mnt/backup/location
+#> lbrun -s /home -l /mnt/backup/location -V setup
+#> lbrun -s /home full
+
+ENDL
+}
+
+check_environment() {
+    if [[ -z $RSYNC ]]; then
+        echo "Could not find rsync in PATH: $PATH" >&2
+        return 1
+    fi
+
+    if [[ -z $DATE ]]; then
+        echo "Could not find date in PATH: $PATH" >&2
+        return 1
+    fi
+
+    if [[ -z $LB_SOURCE ]]; then
+        echo "Backed up directory is not specified '-s'" >&2
+        return 1
+    fi
+
+    if [[ ! -d $LB_SOURCE ]]; then
+        echo "Backed up directory does not exist: $LB_SOURCE" >&2
+        return 1
+    fi
+
+    if [[ -z $LB_LOCATION ]]; then
+        echo "Backup location is not specified '-l'" >&2
+        return 1
+    fi
+
+    if [[ ! -d $LB_LOCATION ]]; then
+        echo "Backup location does not exist: $LB_LOCATION" >&2
+        return 1
+    fi
+
+    if [[ ! -f $LB_EXCLUDES ]]; then
+        echo "Excludes file does not exist: $LB_EXCLUDES" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+print_cron() {
+    echo "30 4 * * 6 lbrun -s $LB_SOURCE full"
+    echo "30 * * * * lbrun -s $LB_SOURCE hourly"
+    echo "30 6 * * * lbrun -s $LB_SOURCE daily"
+}
+
+print_config() {
+    echo "# what to backup"
+    echo "LB_SOURCE=\"$LB_SOURCE\""
+    echo "# where to put backups"
+    echo "LB_LOCATION=\"$LB_LOCATION\""
+    echo "# be verbose, yes or no"
+    echo "LB_VERBOSE=\"$LB_VERBOSE\""
+}
+
+print_excludes() {
+    echo "temp"
+    echo ".cache"
+    echo ".mozilla"
+    echo ".*.un~"
+}
+
+#
+# Setup backup related variables and directories.
+#
+setup_backup() {
+    hour=$($DATE +"%H")
+    dow=$($DATE +"%u")
+    now=$($DATE)
+    fulldir=$LB_LOCATION/full 
+    hourlydir=$LB_LOCATION/hourly
+    hourlynow=$hourlydir/$hour
+    dailydir=$LB_LOCATION/daily
+    dailynow=$dailydir/$day
+
+    [[ ! -d $fulldir   ]] && mkdir $fulldir
+    [[ ! -d $hourlydir ]] && mkdir $hourlydir
+    [[ ! -d $dailydir  ]] && mkdir $dailydir
+
+    rsync="$RSYNC --delete-excluded --exclude-from=$LB_EXCLUDES -v"
+
+    export now fulldir hourlydir hourlynow dailydir dailynow rsync
+    return 0
+}
+
+main() {
+    RSYNC=$(find_bin rsync)
+    DATE=$(find_bin date)
+
+    LB_CONFIG=""
+    LB_SOURCE=""
+    LB_LOCATION=""
+    LB_EXCLUDES=""
+    LB_VERBOSE="no"
+
+    while getopts "s:l:hV" opt; do
+        case $opt in
+            s)
+                LB_SOURCE=$OPTARG
+                LB_CONFIG=$OPTARG/.lbconf
+                LB_EXCLUDES=$OPTARG/.lbexcl
+                ;;
+            l)
+                LB_LOCATION=$OPTARG
+                ;;
+            V)
+                LB_VERBOSE="yes"
+                ;;
+            h)
+                print_usage
+                return 0
+                ;;
+            \?)
+                echo "Invalid option: -$OPTARG" >&2
+                return 1
+                ;;
+            :)
+                echo "Option -$OPTARG requires an argument." >&2
+                return 1
+                ;;
+        esac
+    done
+
+    shift $[ $OPTIND - 1 ]
+
+    MODE=$1
+
+    if [[ -z $MODE ]]; then
+        echo "Mode not specified"
+        print_usage
+        return 1
+    fi
+
+    if [[ -z $LB_SOURCE ]]; then
+        echo "-s: is required and not specified" >&2
+        return 1
+    fi
+
+    if [[ -f $LB_CONFIG ]]; then
+        source $LB_CONFIG
+    fi
+
+    if [[ $LB_VERBOSE == "yes" ]]; then
+        echo "==ENV=="
+        echo "RSYNC: $RSYNC"
+        echo "DATE: $DATE"
+        echo "LB_SOURCE: $LB_SOURCE"
+        echo "LB_LOCATION: $LB_LOCATION"
+        echo "LB_EXCLUDES: $LB_EXCLUDES"
+        echo "LB_VERBOSE: $LB_VERBOSE"
+        echo "==ENV=="
+    fi
+
+    case "$MODE" in
+        "full")
+            if ! check_environment; then
+                print_usage
+                return 1
+            fi
+
+            if ! setup_backup; then
+                print_usage
+                return 1
+            fi
+
+            $rsync --delete -a $LB_SOURCE $fulldir
+            ;;
+        "hourly")
+            if ! check_environment; then
+                print_usage
+                return 1
+            fi
+
+            if ! setup_backup; then
+                print_usage
+                return 1
+            fi
+
+            [ -d $hourlynow ] && rm -rf $hourlynow
+            mkdir $hourlynow
+            $rsync --delete -a --link-dest $fulldir $LB_SOURCE $hourlynow
+            echo $now > $hourlydir/last.txt
+            ;;
+        "daily")
+            if ! check_environment; then
+                print_usage
+                return 1
+            fi
+
+            if ! setup_backup; then
+                print_usage
+                return 1
+            fi
+
+            [ -d $dailynow ] && rm -rf $dailynow
+            mkdir $dailynow
+            $rsync --delete -a --link-dest $fulldir $LB_SOURCE $dailynow
+            echo $now > $dailydir/last.txt
+            ;;
+        "cron")
+            if ! check_environment; then
+                print_usage
+                return 1
+            fi
+
+            print_cron
+            ;;
+        "setup")
+            echo "Writing config: $LB_CONFIG" >&2
+            if ! print_config > $LB_CONFIG; then
+                echo "Could not write: $LB_CONFIG"
+                return 1
+            fi
+
+            echo "Writing example excludes: $LB_EXCLUDES" >&2
+            if ! print_excludes > $LB_EXCLUDES; then
+                echo "Could not write: $LB_EXCLUDES"
+                return 1
+            fi
+            ;;
+        *)
+            echo "Invalid mode: $MODE" >&2
+            print_usage 1
+            ;;
+    esac
+
+    return 0
+}
+
+main "$@"
+exit $?

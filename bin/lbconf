@@ -1,0 +1,44 @@
+#!/bin/bash
+
+#!/bin/bash
+set -e
+
+find_bin() {
+    bin=$1
+
+    IFS=":"
+    for p in $PATH; do
+        if [[ -x $p/$bin ]]; then
+            echo $p/$bin
+        fi
+    done
+}
+
+print_usage() {
+    cat << ENDL
+
+Usage: lbconf <backup-list> <mode>
+
+Run the backup <mode> every location in <backup-list>
+ENDL
+}
+
+main() {
+    LBRUN=$(find_bin lbrun)
+
+    if [[ $# -ne 2 ]]; then
+        print_usage
+        return 1
+    fi
+
+    path=$1
+    mode=$2
+
+    while read p; do
+        $LBRUN -s $p $mode
+    done < $path
+    return 0
+}
+
+main "$@"
+exit $?
