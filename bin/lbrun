@@ -115,7 +115,7 @@ setup_backup() {
     [[ ! -d $hourlydir ]] && mkdir $hourlydir
     [[ ! -d $dailydir  ]] && mkdir $dailydir
 
-    rsync="$RSYNC --delete-excluded --exclude-from=$LB_EXCLUDES -v"
+    rsync="$RSYNC --delete-excluded --exclude-from=$LB_EXCLUDES -vv"
 
     export now fulldir hourlydir hourlynow dailydir dailynow rsync
     return 0
